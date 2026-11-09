@@ -1,110 +1,113 @@
 const pool = require('../config/db');
 
 // Create a new transaction
-exports.createTransaction = (req, res) => {
+exports.createTransaction = async (req, res) => {
   const { type, description, amount, payment_method, purpose } = req.body;
 
-  pool.query(
-    'INSERT INTO transactions (type, description, amount, payment_method, purpose) VALUES (?, ?, ?, ?, ?)',
-    [type, description, amount, payment_method, purpose],
-    (error, result) => {
-      if (error) {
-        console.error('Error inserting transaction:', error);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-      res.json({ id: result.insertId, message: 'Transaction created successfully' });
-    }
-  );
+  try {
+    const result = await pool.query(
+      'INSERT INTO transactions (type, description, amount, payment_method, purpose) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [type, description, amount, payment_method, purpose]
+    );
+    res.json({ id: result.rows[0].id, message: 'Transaction created successfully' });
+  } catch (error) {
+    console.error('Error inserting transaction:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
 // Get all transactions
-exports.getAllTransactions = (req, res) => {
-  pool.query('SELECT * FROM transactions', (error, transactions) => {
-    if (error) {
-      console.error('Error fetching transactions:', error);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-    res.json(transactions);
-  });
+exports.getAllTransactions = async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM transactions');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
 // Get transactions by type (expense or purchase)
-exports.getTransactionsByType = (req, res) => {
+exports.getTransactionsByType = async (req, res) => {
   const { type } = req.params;
 
-  pool.query('SELECT * FROM transactions WHERE type = ?', [type], (error, transactions) => {
-    if (error) {
-      console.error('Error fetching transactions by type:', error);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-    if (transactions.length === 0) {
+  try {
+    const { rows } = await pool.query('SELECT * FROM transactions WHERE type = $1', [type]);
+    
+    if (rows.length === 0) {
       return res.status(404).json({ message: `No transactions found for type: ${type}` });
     }
-    res.json(transactions);
-  });
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching transactions by type:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
 // Get a transaction by ID
-exports.getTransactionById = (req, res) => {
+exports.getTransactionById = async (req, res) => {
   const { id } = req.params;
 
-  pool.query('SELECT * FROM transactions WHERE id = ?', [id], (error, transaction) => {
-    if (error) {
-      console.error('Error fetching transaction by ID:', error);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-    if (transaction.length === 0) {
+  try {
+    const { rows } = await pool.query('SELECT * FROM transactions WHERE id = $1', [id]);
+    
+    if (rows.length === 0) {
       return res.status(404).json({ message: 'Transaction not found' });
     }
-    res.json(transaction[0]);
-  });
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching transaction by ID:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
 // Update a transaction
-exports.updateTransaction = (req, res) => {
+exports.updateTransaction = async (req, res) => {
   const { id } = req.params;
   const { type, description, amount, payment_method } = req.body;
 
-  pool.query(
-    'UPDATE transactions SET type = ?, description = ?, amount = ?, payment_method = ? WHERE id = ?',
-    [type, description, amount, payment_method, id],
-    (error, result) => {
-      if (error) {
-        console.error('Error updating transaction:', error);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-      res.json({ message: 'Transaction updated successfully' });
+  try {
+    const result = await pool.query(
+      'UPDATE transactions SET type = $1, description = $2, amount = $3, payment_method = $4 WHERE id = $5',
+      [type, description, amount, payment_method, id]
+    );
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Transaction not found' });
     }
-  );
+    res.json({ message: 'Transaction updated successfully' });
+  } catch (error) {
+    console.error('Error updating transaction:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
 // Delete a transaction
-exports.deleteTransaction = (req, res) => {
+exports.deleteTransaction = async (req, res) => {
   const { id } = req.params;
 
-  pool.query('DELETE FROM transactions WHERE id = ?', [id], (error, result) => {
-    if (error) {
-      console.error('Error deleting transaction:', error);
-      return res.status(500).json({ error: 'Internal Server Error' });
+  try {
+    const result = await pool.query('DELETE FROM transactions WHERE id = $1', [id]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Transaction not found' });
     }
     res.json({ message: 'Transaction deleted successfully' });
-  });
+  } catch (error) {
+    console.error('Error deleting transaction:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
 
-// Node.js: Get alerts for high-value transactions and unusual activity
-exports.getTransactionAlerts = (req, res) => {
-  const highValueThreshold = 1000; // Example threshold for high-value transactions
+// Get alerts for high-value transactions and unusual activity
+exports.getTransactionAlerts = async (req, res) => {
+  const highValueThreshold = 1000;
 
-  pool.query('SELECT * FROM transactions', (error, transactions) => {
-    if (error) {
-      console.error('Error fetching transactions:', error);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
+  try {
+    const { rows } = await pool.query('SELECT * FROM transactions');
 
-    // Filter for high-value transactions
-    const highValueTransactions = transactions.filter(transaction => transaction.amount >= highValueThreshold);
+    const highValueTransactions = rows.filter(transaction => transaction.amount >= highValueThreshold);
 
-    // Send the filtered data back to the front-end
     res.json({
       highValueTransactions: highValueTransactions.map(transaction => ({
         id: transaction.id,
@@ -113,5 +116,8 @@ exports.getTransactionAlerts = (req, res) => {
         amount: transaction.amount,
       })),
     });
-  });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };

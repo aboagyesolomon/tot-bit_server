@@ -11,29 +11,19 @@ const registerUser = async (req, res) => {
       return res.status(400).json({ message: 'All fields are required, and permissions must be selected' });
     }
 
-    pool.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
-      if (err) {
-        console.error('Error fetching user:', err);
-        return res.status(500).json({ message: 'Server error' });
-      }
+    const { rows: existingUsers } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
 
-      if (results.length > 0) {
-        return res.status(400).json({ message: 'User with this email already exists' });
-      }
+    if (existingUsers.length > 0) {
+      return res.status(400).json({ message: 'User with this email already exists' });
+    }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const query = 'INSERT INTO users (username, password, email, user_type, permissions) VALUES (?, ?, ?, ?, ?)';
-      const values = [username, hashedPassword, email, user_type, JSON.stringify(permissions)];
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const query = 'INSERT INTO users (username, password, email, user_type, permissions) VALUES ($1, $2, $3, $4, $5)';
+    const values = [username, hashedPassword, email, user_type, JSON.stringify(permissions)];
 
-      pool.query(query, values, (err, result) => {
-        if (err) {
-          console.error('Error inserting user:', err);
-          return res.status(500).json({ message: 'Server error' });
-        }
+    await pool.query(query, values);
 
-        res.status(201).json({ message: 'User registered successfully' });
-      });
-    });
+    res.status(201).json({ message: 'User registered successfully' });
   } catch (error) {
     console.error('Error registering user:', error);
     res.status(500).json({ message: 'Server error' });
@@ -44,32 +34,21 @@ const generateNumericToken = () => {
   return Math.floor(100000 + Math.random() * 900000); 
 };
 
-const queryPromise = (query, values = []) => {
-  return new Promise((resolve, reject) => {
-    pool.query(query, values, (error, results) => {
-      if (error) return reject(error);
-      resolve(results);
-    });
-  });
-};
-
 const requestPasswordReset = async (req, res) => {
   const { email } = req.body;
 
   try {
-    const results = await queryPromise('SELECT * FROM users WHERE email = ?', [email]);
+    const { rows: results } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
 
     if (!results || results.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const user = results[0]; 
-
     const resetToken = generateNumericToken();
     const resetTokenExpiry = Date.now() + 3600000; 
 
-    await queryPromise(
-      'UPDATE users SET resetPasswordToken = ?, resetPasswordExpires = ? WHERE email = ?',
+    await pool.query(
+      'UPDATE users SET resetPasswordToken = $1, resetPasswordExpires = $2 WHERE email = $3',
       [resetToken, resetTokenExpiry, email]
     );
 
@@ -96,63 +75,50 @@ const requestPasswordReset = async (req, res) => {
   }
 };
 
-
 const resetPassword = async (req, res) => {
   const { email, token, newPassword } = req.body;
 
   try {
-    pool.query(
-      'SELECT * FROM users WHERE email = ? AND resetPasswordToken = ? AND resetPasswordExpires > ?',
-      [email, token, Date.now()],
-      async (error, results) => {
-        if (error) {
-          console.error('Database error:', error);
-          return res.status(500).json({ message: 'Server error' });
-        }
-
-        // Check if no user was found
-        if (results.length === 0) {
-          return res.status(400).json({ message: 'Invalid or expired token' });
-        }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-        pool.query(
-          'UPDATE users SET password = ?, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE email = ?',
-          [hashedPassword, email],
-          (updateError) => {
-            if (updateError) {
-              console.error('Error updating password:', updateError);
-              return res.status(500).json({ message: 'Server error' });
-            }
-            res.json({ message: 'Password has been reset successfully' });
-          }
-        );
-      }
+    const { rows: results } = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND resetPasswordToken = $2 AND resetPasswordExpires > $3',
+      [email, token, Date.now()]
     );
+
+    // Check if no user was found
+    if (results.length === 0) {
+      return res.status(400).json({ message: 'Invalid or expired token' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await pool.query(
+      'UPDATE users SET password = $1, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE email = $2',
+      [hashedPassword, email]
+    );
+
+    res.json({ message: 'Password has been reset successfully' });
   } catch (error) {
     console.error('Error resetting password:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-
-const getUsers = (req, res) => {
-  pool.query('SELECT * FROM users', (err, results) => {
-    if (err) {
-      console.error('Error fetching users:', err);
-      return res.status(500).json({ error: 'Error fetching users' });
-    }
-
-    res.json(results);
-  });
+const getUsers = async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM users');
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    return res.status(500).json({ error: 'Error fetching users' });
+  }
 };
 
 const getUserById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    
     if (rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -169,7 +135,8 @@ const updateUser = async (req, res) => {
   const { username, password, email, user_type, permissions } = req.body;
 
   try {
-    const [user] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+    const { rows: user } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    
     if (user.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -179,7 +146,7 @@ const updateUser = async (req, res) => {
       hashedPassword = await bcrypt.hash(password, 10);
     }
 
-    const query = 'UPDATE users SET username = ?, password = ?, email = ?, user_type = ?, permissions = ? WHERE id = ?';
+    const query = 'UPDATE users SET username = $1, password = $2, email = $3, user_type = $4, permissions = $5 WHERE id = $6';
     const values = [
       username || user[0].username,
       hashedPassword,
@@ -201,18 +168,13 @@ const deleteUser = async (req, res) => {
   const { id } = req.params;
 
   try {
-    pool.query('DELETE FROM users WHERE id = ?', [id], (err, result) => {
-      if (err) {
-        console.error('Error deleting user:', err);
-        return res.status(500).json({ message: 'Server error' });
-      }
+    const result = await pool.query('DELETE FROM users WHERE id = $1', [id]);
 
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: 'User not found' });
-      }
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-      res.json({ message: 'User deleted successfully' });
-    });
+    res.json({ message: 'User deleted successfully' });
   } catch (error) {
     console.error('Error deleting user:', error);
     res.status(500).json({ message: 'Server error' });

@@ -2,28 +2,24 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const axios = require("axios");
-require("dotenv").config()
+require("dotenv").config();
 
-
-exports.loginUser = (req, res) => {
+exports.loginUser = async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
         return res.status(400).json({ msg: 'Please provide username and password' });
     }
 
-    const findUserQuery = 'SELECT * FROM users WHERE username = ?';
-    pool.query(findUserQuery, [username], (err, results) => {
-        if (err) {
-            console.error('Database query error:', err);
-            return res.status(500).json({ msg: 'Server error', error: err.message });
-        }
+    try {
+        const findUserQuery = 'SELECT * FROM users WHERE username = $1';
+        const { rows } = await pool.query(findUserQuery, [username]);
 
-        if (results.length === 0) {
+        if (rows.length === 0) {
             return res.status(400).json({ msg: 'Invalid credentials' });
         }
 
-        const user = results[0];
+        const user = rows[0];
 
         const isMatch = bcrypt.compareSync(password, user.password);
         if (!isMatch) {
@@ -32,32 +28,30 @@ exports.loginUser = (req, res) => {
 
         const token = jwt.sign(
             { id: user.id, username: user.username, permissions: user.permissions, user_type: user.user_type }, 
-            '0243818668',
+            process.env.JWT_SECRET || '0243818668',
             { expiresIn: '7d' }
         );
 
         const expirationTime = jwt.decode(token).exp * 1000; 
 
-        const updateLoginTimeQuery = 'UPDATE users SET login_time = NOW() WHERE id = ?';
-        pool.query(updateLoginTimeQuery, [user.id], (updateErr) => {
-            if (updateErr) {
-                console.error('Error updating login time:', updateErr);
-                return res.status(500).json({ msg: 'Error updating login time' });
-            }
+        const updateLoginTimeQuery = 'UPDATE users SET login_time = NOW() WHERE id = $1';
+        await pool.query(updateLoginTimeQuery, [user.id]);
 
-            res.json({
-                token,
-                permissions: user.permissions,
-                username: user.username,
-                user_type: user.user_type,
-                expiresIn: expirationTime,
-                email: user.email
-            });
+        res.json({
+            token,
+            permissions: user.permissions,
+            username: user.username,
+            user_type: user.user_type,
+            expiresIn: expirationTime,
+            email: user.email
         });
-    });
+    } catch (err) {
+        console.error('Database query error:', err);
+        return res.status(500).json({ msg: 'Server error', error: err.message });
+    }
 };
 
-exports.logoutUser = (req, res) => {
+exports.logoutUser = async (req, res) => {
     const userId = req.user?.id; 
     const username = req.body.username; 
 
@@ -65,32 +59,28 @@ exports.logoutUser = (req, res) => {
         return res.status(400).json({ msg: 'User ID or username is required to log out' });
     }
 
-    const userQuery = userId ? `SELECT * FROM users WHERE id = ?` : `SELECT * FROM users WHERE username = ?`;
-    const userValue = userId ? [userId] : [username];
+    try {
+        const userQuery = userId 
+            ? 'SELECT * FROM users WHERE id = $1' 
+            : 'SELECT * FROM users WHERE username = $1';
+            
+        const userValue = userId ? [userId] : [username];
 
-    pool.query(userQuery, userValue, (err, results) => {
-        if (err) {
-            console.error('Database query error:', err);
-            return res.status(500).json({ msg: 'Server error', error: err.message });
-        }
+        const { rows } = await pool.query(userQuery, userValue);
 
-        if (results.length === 0) {
+        if (rows.length === 0) {
             return res.status(400).json({ msg: 'User not found' });
         }
 
-        const updateLogoutTimeQuery = 'UPDATE users SET logout_time = NOW() WHERE id = ?';
-        pool.query(updateLogoutTimeQuery, [results[0].id], (updateErr) => {
-            if (updateErr) {
-                console.error('Error updating logout time:', updateErr);
-                return res.status(500).json({ msg: 'Error updating logout time' });
-            }
+        const updateLogoutTimeQuery = 'UPDATE users SET logout_time = NOW() WHERE id = $1';
+        await pool.query(updateLogoutTimeQuery, [rows[0].id]);
 
-            res.status(200).json({ msg: 'Logout successful' });
-        });
-    });
+        res.status(200).json({ msg: 'Logout successful' });
+    } catch (err) {
+        console.error('Database query error:', err);
+        return res.status(500).json({ msg: 'Server error', error: err.message });
+    }
 };
-
-
 
 exports.createPayment = async (req, res) => {
   const { phone, amount } = req.body;
@@ -117,10 +107,9 @@ exports.createPayment = async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer sk_test_70d80a0b20cfc26b76c89d4f9bfca1e4fe3ffea7`, // ✅ FIXED
+          Authorization: `Bearer sk_test_70d80a0b20cfc26b76c89d4f9bfca1e4fe3ffea7`,
           "Content-Type": "application/json",
         }
-        
       }
     );
 
@@ -132,5 +121,3 @@ exports.createPayment = async (req, res) => {
     res.status(500).json({ error: "Failed to initialize payment" });
   }
 };
-
-

@@ -3,8 +3,9 @@ const pool = require('../config/db');
 // Helper function to generate a unique invoice number
 const generateInvoiceNumber = async () => {
   try {
-    const [rows] = await pool.query('SELECT COUNT(id) AS invoice_count FROM invoices');
-    const invoice_count = rows[0]?.invoice_count || 0;
+    const { rows } = await pool.query('SELECT COUNT(id) AS invoice_count FROM invoices');
+    // PostgreSQL returns COUNT as a string, so we convert it to a number
+    const invoice_count = Number(rows[0]?.invoice_count) || 0; 
     const paddedNumber = (invoice_count + 1).toString().padStart(4, '0');
     return `INV${paddedNumber}`;
   } catch (err) {
@@ -25,14 +26,15 @@ exports.createInvoice = async (req, res) => {
 
     // Insert the invoice into the database
     const query = `
-      INSERT INTO invoice (client_name, invoice_number, issue_date, total_amount, amount_paid, balance, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO invoices (client_name, invoice_number, issue_date, total_amount, amount_paid, balance, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
     `;
 
     await pool.query(query, [client_name, invoice_number, issue_date, total_amount, amount_paid, balance, status]);
 
     res.status(201).json({ message: 'Invoice created successfully', invoice_number });
   } catch (err) {
+    console.error('Create Invoice Error:', err);
     res.status(500).json({ error: 'Failed to create invoice' });
   }
 };
@@ -40,8 +42,8 @@ exports.createInvoice = async (req, res) => {
 // Get all invoices
 exports.getAllInvoices = async (req, res) => {
   try {
-    const [invoices] = await pool.query('SELECT * FROM invoice');
-    res.status(200).json(invoices);
+    const { rows } = await pool.query('SELECT * FROM invoices');
+    res.status(200).json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoices' });
   }
@@ -52,13 +54,13 @@ exports.getInvoiceById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const [invoice] = await pool.query('SELECT * FROM invoices WHERE id = ?', [id]);
+    const { rows } = await pool.query('SELECT * FROM invoices WHERE id = $1', [id]);
 
-    if (invoice.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    res.status(200).json(invoice[0]);
+    res.status(200).json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice' });
   }
@@ -75,13 +77,13 @@ exports.updateInvoice = async (req, res) => {
 
     const query = `
       UPDATE invoices
-      SET client_name = ?, issue_date = ?, total_amount = ?, amount_paid = ?, balance = ?, status = ?
-      WHERE id = ?
+      SET client_name = $1, issue_date = $2, total_amount = $3, amount_paid = $4, balance = $5, status = $6
+      WHERE id = $7
     `;
 
-    const [result] = await pool.query(query, [client_name, issue_date, total_amount, amount_paid, balance, status, id]);
+    const result = await pool.query(query, [client_name, issue_date, total_amount, amount_paid, balance, status, id]);
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
@@ -96,9 +98,9 @@ exports.deleteInvoice = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const [result] = await pool.query('DELETE FROM invoices WHERE id = ?', [id]);
+    const result = await pool.query('DELETE FROM invoices WHERE id = $1', [id]);
 
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 

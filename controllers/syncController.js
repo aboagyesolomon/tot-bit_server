@@ -84,11 +84,11 @@ exports.registerClient = async (req, res) => {
   try {
     await pool.query(
       `INSERT INTO sync_clients (client_id, user_id, device_name, device_info, last_seen_at)
-       VALUES (?, ?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE
-         user_id = VALUES(user_id),
-         device_name = VALUES(device_name),
-         device_info = VALUES(device_info),
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (client_id) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         device_name = EXCLUDED.device_name,
+         device_info = EXCLUDED.device_info,
          last_seen_at = NOW()`,
       [client_id, req.user.id, device_name || null, device_info || null]
     );
@@ -110,8 +110,8 @@ exports.pushChanges = async (req, res) => {
   }
 
   try {
-    const [clientRows] = await pool.query(
-      'SELECT 1 FROM sync_clients WHERE client_id = ? AND user_id = ? LIMIT 1',
+    const { rows: clientRows } = await pool.query(
+      'SELECT 1 FROM sync_clients WHERE client_id = $1 AND user_id = $2 LIMIT 1',
       [client_id, req.user.id]
     );
     if (!clientRows.length) {
@@ -154,7 +154,7 @@ exports.pushChanges = async (req, res) => {
     }
 
     await pool.query(
-      'UPDATE sync_clients SET last_push_at = NOW(), last_seen_at = NOW() WHERE client_id = ?',
+      'UPDATE sync_clients SET last_push_at = NOW(), last_seen_at = NOW() WHERE client_id = $1',
       [client_id]
     );
 
@@ -181,8 +181,8 @@ exports.pushReceipt = async (req, res) => {
   }
 
   try {
-    const [clientRows] = await pool.query(
-      'SELECT 1 FROM sync_clients WHERE client_id = ? AND user_id = ? LIMIT 1',
+    const { rows: clientRows } = await pool.query(
+      'SELECT 1 FROM sync_clients WHERE client_id = $1 AND user_id = $2 LIMIT 1',
       [client_id, req.user.id]
     );
     if (!clientRows.length) {
@@ -197,8 +197,8 @@ exports.pushReceipt = async (req, res) => {
 
     // Idempotency check
     if (receipt.serialNumber) {
-      const [existingSales] = await pool.query(
-        'SELECT 1 FROM sales WHERE serialNumber = ? LIMIT 1',
+      const { rows: existingSales } = await pool.query(
+        'SELECT 1 FROM sales WHERE serialNumber = $1 LIMIT 1',
         [receipt.serialNumber]
       );
       
@@ -233,8 +233,8 @@ exports.pullChanges = async (req, res) => {
   }
 
   try {
-    const [clientRows] = await pool.query(
-      'SELECT 1 FROM sync_clients WHERE client_id = ? AND user_id = ? LIMIT 1',
+    const { rows: clientRows } = await pool.query(
+      'SELECT 1 FROM sync_clients WHERE client_id = $1 AND user_id = $2 LIMIT 1',
       [client_id, req.user.id]
     );
     if (!clientRows.length) {
@@ -248,25 +248,23 @@ exports.pullChanges = async (req, res) => {
     let sales = [];
 
     if (canViewProducts) {
-      // Changed to >= to fix the timing issue
-      const [rows] = await pool.query(
-        'SELECT * FROM products WHERE updated_at >= ?',
+      const { rows } = await pool.query(
+        'SELECT * FROM products WHERE updated_at >= $1',
         [since]
       );
       products = rows;
     }
 
     if (canViewSales) {
-      // Changed to >= to fix the timing issue
-      const [rows] = await pool.query(
-        'SELECT * FROM sales WHERE updated_at >= ?',
+      const { rows } = await pool.query(
+        'SELECT * FROM sales WHERE updated_at >= $1',
         [since]
       );
       sales = rows;
     }
 
     await pool.query(
-      'UPDATE sync_clients SET last_pull_at = NOW(), last_seen_at = NOW() WHERE client_id = ?',
+      'UPDATE sync_clients SET last_pull_at = NOW(), last_seen_at = NOW() WHERE client_id = $1',
       [client_id]
     );
 
@@ -291,16 +289,16 @@ async function processReceipt(receipt, user) {
     throw new Error('No products in receipt');
   }
 
-  const connection = await pool.getConnection();
+  const client = await pool.connect();
   
   try {
-    await connection.beginTransaction();
+    await client.query('BEGIN');
 
     let finalUserId = user.id;
     let finalUsername = username || user.username;
 
-    const [userResult] = await connection.query(
-      'SELECT id, username FROM users WHERE username = ?',
+    const { rows: userResult } = await client.query(
+      'SELECT id, username FROM users WHERE username = $1',
       [finalUsername]
     );
     if (userResult.length > 0) {
@@ -311,8 +309,8 @@ async function processReceipt(receipt, user) {
     for (const item of selectedProducts) {
       const { product_id, quantity } = item;
 
-      const [productResult] = await connection.query(
-        'SELECT id, prod_name, sprice, cprice, quantity FROM products WHERE id = ? FOR UPDATE',
+      const { rows: productResult } = await client.query(
+        'SELECT id, prod_name, sprice, cprice, quantity FROM products WHERE id = $1 FOR UPDATE',
         [product_id]
       );
 
@@ -332,8 +330,8 @@ async function processReceipt(receipt, user) {
       const total_amount = sprice * quantity;
       const profit = (sprice - cprice) * quantity;
 
-      await connection.query(
-        'UPDATE products SET quantity = quantity - ? WHERE id = ?',
+      await client.query(
+        'UPDATE products SET quantity = quantity - $1 WHERE id = $2',
         [quantity, product_id]
       );
 
@@ -341,10 +339,10 @@ async function processReceipt(receipt, user) {
         const change_given = Number(amountPaid) - total_amount;
         const saleUuid = require('crypto').randomUUID();
         
-        await connection.query(
+        await client.query(
           `INSERT INTO sales 
            (uuid, product_id, prod_name, quantity_sold, total_amount, amount_paid, change_given, payment_mode, user_id, username, profit, serialNumber)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
             saleUuid, product_id, product.prod_name, quantity, total_amount, 
             amountPaid, change_given, paymentMode, finalUserId, 
@@ -357,7 +355,7 @@ async function processReceipt(receipt, user) {
     if (paymentMode === 'credit') {
       const productPrices = [];
       for (const item of selectedProducts) {
-        const [p] = await connection.query('SELECT sprice, cprice, prod_name FROM products WHERE id = ?', [item.product_id]);
+        const { rows: p } = await client.query('SELECT sprice, cprice, prod_name FROM products WHERE id = $1', [item.product_id]);
         if (p.length > 0) {
            productPrices.push({ price: p[0].sprice, quantity: item.quantity, prod_name: p[0].prod_name, product_id: item.product_id });
         }
@@ -372,21 +370,21 @@ async function processReceipt(receipt, user) {
         prod_name: p.prod_name
       })));
 
-      await connection.query(
+      await client.query(
         `INSERT INTO credit_sales (client_name, client_phone, total_amount, amount_paid, balance, products)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [clientName || 'Unknown', clientPhone || '000', totalAmount, amountPaid, balance, productsJson]
       );
     }
 
-    await connection.commit();
+    await client.query('COMMIT');
     console.log(`[Sync] Receipt ${serialNumber} processed successfully`);
 
   } catch (error) {
-    await connection.rollback();
+    await client.query('ROLLBACK');
     throw error;
   } finally {
-    connection.release();
+    client.release();
   }
 }
 
@@ -396,8 +394,8 @@ async function applyChange(entity, op, uuid, data, client_updated_at) {
   const cleanSafe = coerceNumerics(entity, clean);
 
   if (op === 'create') {
-    const [existing] = await pool.query(
-      `SELECT server_version FROM ${table} WHERE uuid = ? LIMIT 1`,
+    const { rows: existing } = await pool.query(
+      `SELECT server_version FROM ${table} WHERE uuid = $1 LIMIT 1`,
       [uuid]
     );
     if (existing.length) {
@@ -405,12 +403,12 @@ async function applyChange(entity, op, uuid, data, client_updated_at) {
     }
 
     const cols = Object.keys(cleanSafe);
-    const placeholders = cols.map(() => '?').join(', ');
+    const placeholders = cols.map((_, i) => `$${i + 2}`).join(', ');
     const values = cols.map(c => cleanSafe[c]);
 
     await pool.query(
       `INSERT INTO ${table} (uuid, ${cols.join(', ')}, updated_at, server_version)
-       VALUES (?, ${placeholders}, NOW(), 1)`,
+       VALUES ($1, ${placeholders}, NOW(), 1)`,
       [uuid, ...values]
     );
     return { server_version: 1 };
@@ -421,8 +419,8 @@ async function applyChange(entity, op, uuid, data, client_updated_at) {
   }
 
   if (op === 'delete') {
-    const [rows] = await pool.query(
-      `SELECT server_version FROM ${table} WHERE uuid = ? LIMIT 1`,
+    const { rows } = await pool.query(
+      `SELECT server_version FROM ${table} WHERE uuid = $1 LIMIT 1`,
       [uuid]
     );
     if (!rows.length) return { conflict: true, reason: 'not_found' };
@@ -430,7 +428,7 @@ async function applyChange(entity, op, uuid, data, client_updated_at) {
     await pool.query(
       `UPDATE ${table}
        SET deleted_at = NOW(), updated_at = NOW(), server_version = server_version + 1
-       WHERE uuid = ?`,
+       WHERE uuid = $1`,
       [uuid]
     );
     return { server_version: rows[0].server_version + 1 };
@@ -443,8 +441,8 @@ async function applyUpdate(table, uuid, data, client_updated_at) {
   const entity = table === 'products' ? 'product' : 'sale';
   const cleanData = coerceNumerics(entity, data || {});
 
-  const [rows] = await pool.query(
-    `SELECT updated_at, server_version FROM ${table} WHERE uuid = ? LIMIT 1`,
+  const { rows } = await pool.query(
+    `SELECT updated_at, server_version FROM ${table} WHERE uuid = $1 LIMIT 1`,
     [uuid]
   );
   if (!rows.length) return { conflict: true, reason: 'not_found' };
@@ -460,13 +458,13 @@ async function applyUpdate(table, uuid, data, client_updated_at) {
   const cols = Object.keys(cleanData);
   if (!cols.length) return { server_version: server.server_version };
 
-  const setClause = cols.map(c => `${c} = ?`).join(', ');
+  const setClause = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
   const values = cols.map(c => cleanData[c]);
 
   await pool.query(
     `UPDATE ${table}
      SET ${setClause}, updated_at = NOW(), server_version = server_version + 1
-     WHERE uuid = ?`,
+     WHERE uuid = $${cols.length + 1}`,
     [...values, uuid]
   );
 
@@ -477,7 +475,7 @@ async function logChange(client_id, user_id, entity, uuid, op, status, note) {
   try {
     await pool.query(
       `INSERT INTO sync_log (client_id, user_id, entity, entity_uuid, op, status, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [client_id, user_id, entity, uuid, op, status, note]
     );
   } catch (err) {

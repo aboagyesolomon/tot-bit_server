@@ -5,7 +5,7 @@ const calculateProfitPerUnit = ({ unit_per_quantity, unit_price, cprice }) => {
     return profitWholePack / unit_per_quantity;
 };
 
-exports.createTransfer = (req, res) => {
+exports.createTransfer = async (req, res) => {
     const {
         product_id,
         prod_name,
@@ -16,8 +16,6 @@ exports.createTransfer = (req, res) => {
         profit_per_unit,
         reason
     } = req.body;
-
-    console.log('Received transfer data:', req.body);
 
     const calculatedProfitPerUnit = profit_per_unit || calculateProfitPerUnit({ unit_per_quantity, unit_price, cprice });
 
@@ -38,15 +36,12 @@ exports.createTransfer = (req, res) => {
 
     const total_unit_per_quantity_transferred = quantity_to_transfer * unit_per_quantity;
 
-    const checkQuery = `SELECT SUM(total_unit_per_quantity_transferred) AS total_units_transferred FROM transfers WHERE product_id = ?`;
-
-    pool.query(checkQuery, [product_id], (checkErr, result) => {
-        if (checkErr) {
-            console.error('Error checking transfer data:', checkErr.message);
-            return res.status(500).json({ error: 'Error checking transfer data', details: checkErr.message });
-        }
-
-        const totalTransferred = result[0]?.total_units_transferred || 0;
+    try {
+        const checkQuery = `SELECT SUM(total_unit_per_quantity_transferred) AS total_units_transferred FROM transfers WHERE product_id = $1`;
+        const checkResult = await pool.query(checkQuery, [product_id]);
+        
+        // PostgreSQL SUM returns a string or null, so we force it to a number
+        const totalTransferred = Number(checkResult.rows[0]?.total_units_transferred) || 0;
 
         if (totalTransferred > 0 && !reason) {
             return res.status(400).json({
@@ -59,166 +54,126 @@ exports.createTransfer = (req, res) => {
         if (totalTransferred > 0 && reason) {
             const insertShortageQuery = `
                 INSERT INTO shortages (product_id, prod_name, shortage_reason)
-                VALUES (?, ?, ?)
+                VALUES ($1, $2, $3)
             `;
-            pool.query(insertShortageQuery, [product_id, prod_name, reason], (shortageErr) => {
-                if (shortageErr) {
-                    console.error('Error logging shortage:', shortageErr.message);
-                    return res.status(500).json({ error: 'Error logging shortage', details: shortageErr.message });
-                }
-                console.log('Shortage logged successfully.');
-            });
+            await pool.query(insertShortageQuery, [product_id, prod_name, reason]);
         }
 
-        const checkExistingTransferQuery = `SELECT * FROM transfers WHERE product_id = ? ORDER BY created_at DESC LIMIT 1`;
+        const checkExistingTransferQuery = `SELECT * FROM transfers WHERE product_id = $1 ORDER BY created_at DESC LIMIT 1`;
+        const existingTransferResult = await pool.query(checkExistingTransferQuery, [product_id]);
+        const existingTransfer = existingTransferResult.rows[0];
 
-        pool.query(checkExistingTransferQuery, [product_id], (checkExistingErr, existingTransferResult) => {
-            if (checkExistingErr) {
-                console.error('Error checking existing transfer:', checkExistingErr.message);
-                return res.status(500).json({ error: 'Error checking existing transfer', details: checkExistingErr.message });
-            }
+        if (existingTransfer) {
+            if (reason) {
+                const updateQuery = `
+                    UPDATE transfers 
+                    SET total_unit_per_quantity_transferred = $1, 
+                        reason = $2 
+                    WHERE product_id = $3
+                `;
+                await pool.query(updateQuery, [total_unit_per_quantity_transferred, reason, product_id]);
 
-            const existingTransfer = existingTransferResult[0];
-
-            if (existingTransfer) {
-                if (reason) {
-                    const updateQuery = `
-                        UPDATE transfers 
-                        SET total_unit_per_quantity_transferred = ?, 
-                            reason = ? 
-                        WHERE product_id = ?
-                    `;
-
-                    pool.query(updateQuery, [total_unit_per_quantity_transferred, reason, product_id], (updateErr) => {
-                        if (updateErr) {
-                            console.error('Error updating transfer record:', updateErr.message);
-                            return res.status(500).json({ error: 'Error updating transfer record', details: updateErr.message });
-                        }
-
-                        console.log('Transfer record updated with new total_unit_per_quantity_transferred due to reason.');
-                        return res.status(200).json({
-                            message: 'Transfer record updated successfully.',
-                            reasonLogged: true,
-                        });
-                    });
-                } else {
-                    const updatedTotalTransferred = existingTransfer.total_unit_per_quantity_transferred + total_unit_per_quantity_transferred;
-
-                    const updateQuery = `
-                        UPDATE transfers 
-                        SET quantity_to_transfer = ?, 
-                            total_unit_per_quantity_transferred = ?,
-                            reason = ?
-                        WHERE product_id = ?
-                    `;
-
-                    pool.query(updateQuery, [quantity_to_transfer, updatedTotalTransferred, existingTransfer.reason, product_id], (updateErr) => {
-                        if (updateErr) {
-                            console.error('Error updating transfer record:', updateErr.message);
-                            return res.status(500).json({ error: 'Error updating transfer record', details: updateErr.message });
-                        }
-
-                        const updateProductQuery = `UPDATE products SET quantity = quantity - ? WHERE id = ?`;
-                        pool.query(updateProductQuery, [quantity_to_transfer, product_id], (updateProdErr) => {
-                            if (updateProdErr) {
-                                console.error('Error updating product quantity:', updateProdErr.message);
-                                return res.status(500).json({ error: 'Error updating product quantity', details: updateProdErr.message });
-                            }
-
-                            res.status(200).json({
-                                message: 'Transfer record updated successfully',
-                            });
-                        });
-                    });
-                }
+                return res.status(200).json({
+                    message: 'Transfer record updated successfully.',
+                    reasonLogged: true,
+                });
             } else {
-                const transferQuery = `
-                    INSERT INTO transfers (
-                        product_id, 
-                        prod_name, 
-                        cprice, 
-                        unit_per_quantity, 
-                        unit_price, 
-                        quantity_to_transfer,
-                        profit_per_unit, 
-                        total_unit_per_quantity_transferred,
-                        reason
-                    ) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                const updatedTotalTransferred = Number(existingTransfer.total_unit_per_quantity_transferred) + total_unit_per_quantity_transferred;
 
-                pool.query(
-                    transferQuery,
-                    [product_id, prod_name, cprice, unit_per_quantity, unit_price, quantity_to_transfer, calculatedProfitPerUnit, total_unit_per_quantity_transferred, reason || null],
-                    (transferErr, result) => {
-                        if (transferErr) {
-                            console.error('Error creating transfer record:', transferErr.message);
-                            return res.status(500).json({ error: 'Error creating transfer record', details: transferErr.message });
-                        }
+                const updateQuery = `
+                    UPDATE transfers 
+                    SET quantity_to_transfer = $1, 
+                        total_unit_per_quantity_transferred = $2,
+                        reason = $3
+                    WHERE product_id = $4
+                `;
+                await pool.query(updateQuery, [quantity_to_transfer, updatedTotalTransferred, existingTransfer.reason, product_id]);
 
-                        const updateQuery = `UPDATE products SET quantity = quantity - ? WHERE id = ?`;
-                        pool.query(updateQuery, [quantity_to_transfer, product_id], (updateErr) => {
-                            if (updateErr) {
-                                console.error('Error updating product quantity:', updateErr.message);
-                                return res.status(500).json({ error: 'Error updating product quantity', details: updateErr.message });
-                            }
+                const updateProductQuery = `UPDATE products SET quantity = quantity - $1 WHERE id = $2`;
+                await pool.query(updateProductQuery, [quantity_to_transfer, product_id]);
 
-                            res.status(201).json({
-                                message: 'Transfer successful',
-                                transferId: result.insertId,
-                                reasonLogged: !!reason,
-                            });
-                        });
-                    }
-                );
+                return res.status(200).json({
+                    message: 'Transfer record updated successfully',
+                });
             }
-        });
-    });
+        } else {
+            const transferQuery = `
+                INSERT INTO transfers (
+                    product_id, 
+                    prod_name, 
+                    cprice, 
+                    unit_per_quantity, 
+                    unit_price, 
+                    quantity_to_transfer,
+                    profit_per_unit, 
+                    total_unit_per_quantity_transferred,
+                    reason
+                ) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`;
+
+            const transferResult = await pool.query(
+                transferQuery,
+                [product_id, prod_name, cprice, unit_per_quantity, unit_price, quantity_to_transfer, calculatedProfitPerUnit, total_unit_per_quantity_transferred, reason || null]
+            );
+
+            const updateQuery = `UPDATE products SET quantity = quantity - $1 WHERE id = $2`;
+            await pool.query(updateQuery, [quantity_to_transfer, product_id]);
+
+            return res.status(201).json({
+                message: 'Transfer successful',
+                transferId: transferResult.rows[0].id,
+                reasonLogged: !!reason,
+            });
+        }
+    } catch (err) {
+        console.error('Error processing transfer:', err.message);
+        return res.status(500).json({ error: 'Error processing transfer', details: err.message });
+    }
 };
 
-exports.editTransfer = (req, res) => {
+exports.editTransfer = async (req, res) => {
     const { id } = req.params;
     const { quantity_to_transfer, total_unit_per_quantity_transferred, reason } = req.body;
 
     const updateQuery = `
         UPDATE transfers 
-        SET quantity_to_transfer = ?, 
-            total_unit_per_quantity_transferred = ?, 
-            reason = ?
-        WHERE id = ?
+        SET quantity_to_transfer = $1, 
+            total_unit_per_quantity_transferred = $2, 
+            reason = $3
+        WHERE id = $4
     `;
 
-    pool.query(
-        updateQuery,
-        [quantity_to_transfer, total_unit_per_quantity_transferred, reason, id],
-        (err, result) => {
-            if (err) {
-                console.error('Error updating transfer:', err.message);
-                return res.status(500).json({ error: 'Error updating transfer', details: err.message });
-            }
+    try {
+        await pool.query(
+            updateQuery,
+            [quantity_to_transfer, total_unit_per_quantity_transferred, reason, id]
+        );
 
-            res.status(200).json({
-                message: 'Transfer updated successfully',
-            });
-        }
-    );
+        res.status(200).json({
+            message: 'Transfer updated successfully',
+        });
+    } catch (err) {
+        console.error('Error updating transfer:', err.message);
+        return res.status(500).json({ error: 'Error updating transfer', details: err.message });
+    }
 };
 
-exports.getAllTransfer = (req, res) => {
-    pool.query('SELECT * FROM transfers', (error, transfers) => {
-        if (error) {
-            console.error('Error fetching transfers:', error);
-            return res.status(500).json({ error: 'Internal Server Error' });
-        }
-        res.json(transfers);
-    });
+exports.getAllTransfer = async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM transfers');
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching transfers:', error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+    }
 };
 
-exports.getAllShortages = (req, res) => {
-    pool.query('SELECT * FROM shortages', (error, shortages) => {
-        if (error) {
-            console.error('Error fetching shortages:', error);
-            return res.status(500).json({ error: 'Internal Server Error' });
-        }
-        res.json(shortages);
-    });
+exports.getAllShortages = async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM shortages');
+        res.json(rows);
+    } catch (error) {
+        console.error('Error fetching shortages:', error);
+        return res.status(500).json({ error: 'Internal Server Error' });
+    }
 };
