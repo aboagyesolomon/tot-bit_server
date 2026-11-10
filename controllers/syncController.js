@@ -1,13 +1,19 @@
 const pool = require('../config/dbPromise');
 
+// ------------------------------------------------------------------
+// Entity maps
+// ------------------------------------------------------------------
 const ENTITY_TABLE = {
   product: 'products',
   sale: 'sales',
+  user: 'users',
+  client: 'clients',
+  invoice: 'invoices',
+  creditor: 'creditors',
+  finance: 'transactions', 
+  laboratory: 'laboratory',
 };
 
-// ------------------------------------------------------------------
-// Permission map
-// ------------------------------------------------------------------
 const PERMISSION_MAP = {
   product: { create: '3.3', update: '3.3', delete: '3.3' },
   sale:    { create: '2.3', update: '2.3', delete: '2.3' },
@@ -39,6 +45,26 @@ const ALLOWED_FIELDS = {
     'amount_paid', 'change_given', 'payment_mode', 'sale_date',
     'user_id', 'username', 'profit', 'serialNumber',
   ],
+  user: [
+    'username', 'password', 'email', 'user_type', 'permissions'
+  ],
+  client: [
+    'client_name', 'client_address', 'client_telephone', 'client_type'
+  ],
+  invoice: [
+    'client_name', 'invoice_number', 'issue_date', 'total_amount', 
+    'amount_paid', 'balance', 'status'
+  ],
+  creditor: [
+    'creditor_name', 'creditor_phone', 'total_amount', 'amount_paid', 
+    'balance', 'product', 'quantity', 'payment_method', 'description'
+  ],
+  finance: [
+    'type', 'description', 'amount', 'payment_method', 'purpose'
+  ],
+  laboratory: [
+    'client_name', 'lab_types', 'client_telephone', 'test_result', 'remarks'
+  ]
 };
 
 function pickAllowed(entity, data) {
@@ -63,6 +89,9 @@ const NUMERIC_COLUMNS = {
     'product_id', 'quantity_sold', 'total_amount', 'amount_paid',
     'change_given', 'user_id', 'profit',
   ],
+  invoice: ['total_amount', 'amount_paid', 'balance'],
+  creditor: ['total_amount', 'amount_paid', 'balance', 'quantity'],
+  finance: ['amount'],
 };
 
 function coerceNumerics(entity, obj) {
@@ -195,7 +224,6 @@ exports.pushReceipt = async (req, res) => {
       });
     }
 
-    // Idempotency check
     if (receipt.serialNumber) {
       const { rows: existingSales } = await pool.query(
         'SELECT 1 FROM sales WHERE serialNumber = $1 LIMIT 1',
@@ -241,27 +269,35 @@ exports.pullChanges = async (req, res) => {
       return res.status(403).json({ message: 'Unknown client' });
     }
 
-    const canViewProducts = hasPermission(req.user.permissions, '3.3');
-    const canViewSales    = hasPermission(req.user.permissions, '2.3');
+    let products = [], sales = [], users = [], clients = [], invoices = [], creditors = [], finances = [], laboratory = [];
 
-    let products = [];
-    let sales = [];
-
-    if (canViewProducts) {
-      const { rows } = await pool.query(
-        'SELECT * FROM products WHERE updated_at >= $1',
-        [since]
-      );
+    if (hasPermission(req.user.permissions, '3.3')) {
+      const { rows } = await pool.query('SELECT * FROM products WHERE updated_at >= $1', [since]);
       products = rows;
     }
-
-    if (canViewSales) {
-      const { rows } = await pool.query(
-        'SELECT * FROM sales WHERE updated_at >= $1',
-        [since]
-      );
+    if (hasPermission(req.user.permissions, '2.3')) {
+      const { rows } = await pool.query('SELECT * FROM sales WHERE updated_at >= $1', [since]);
       sales = rows;
     }
+    
+    // Pull the rest of the tables
+    const usersRes = await pool.query('SELECT * FROM users WHERE updated_at >= $1', [since]);
+    users = usersRes.rows;
+
+    const clientsRes = await pool.query('SELECT * FROM clients WHERE updated_at >= $1', [since]);
+    clients = clientsRes.rows;
+
+    const invoicesRes = await pool.query('SELECT * FROM invoices WHERE updated_at >= $1', [since]);
+    invoices = invoicesRes.rows;
+
+    const creditorsRes = await pool.query('SELECT * FROM creditors WHERE updated_at >= $1', [since]);
+    creditors = creditorsRes.rows;
+
+    const financesRes = await pool.query('SELECT * FROM transactions WHERE updated_at >= $1', [since]);
+    finances = financesRes.rows;
+
+    const laboratoryRes = await pool.query('SELECT * FROM laboratory WHERE updated_at >= $1', [since]);
+    laboratory = laboratoryRes.rows;
 
     await pool.query(
       'UPDATE sync_clients SET last_pull_at = NOW(), last_seen_at = NOW() WHERE client_id = $1',
@@ -271,6 +307,12 @@ exports.pullChanges = async (req, res) => {
     res.json({
       products,
       sales,
+      users,
+      clients,
+      invoices,
+      creditors,
+      finances,
+      laboratory,
       server_time: new Date().toISOString(),
     });
   } catch (error) {
@@ -438,7 +480,7 @@ async function applyChange(entity, op, uuid, data, client_updated_at) {
 }
 
 async function applyUpdate(table, uuid, data, client_updated_at) {
-  const entity = table === 'products' ? 'product' : 'sale';
+  const entity = Object.keys(ENTITY_TABLE).find(key => ENTITY_TABLE[key] === table);
   const cleanData = coerceNumerics(entity, data || {});
 
   const { rows } = await pool.query(
