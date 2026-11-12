@@ -58,7 +58,7 @@ const requestPasswordReset = async (req, res) => {
       service: 'gmail',
       auth: {
         user: 'solomonaboagye47@gmail.com',
-        pass: 'xqcd igfl giiw nwvv', 
+        pass: 'xqcdigflgiiwnwvv', 
       },
     });
 
