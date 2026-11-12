@@ -1,8 +1,5 @@
 const pool = require('../config/dbPromise');
 
-// ------------------------------------------------------------------
-// Entity maps
-// ------------------------------------------------------------------
 const ENTITY_TABLE = {
   product: 'products',
   sale: 'sales',
@@ -28,9 +25,7 @@ function requiredPermission(entity, op) {
   return PERMISSION_MAP[entity]?.[op] || null;
 }
 
-// ------------------------------------------------------------------
-// Field whitelists
-// ------------------------------------------------------------------
+
 const ALLOWED_FIELDS = {
   product: [
     'prod_name', 'brand', 'prod_manu', 'quantity', 'min_quantity',
@@ -76,9 +71,6 @@ function pickAllowed(entity, data) {
   return out;
 }
 
-// ------------------------------------------------------------------
-// Coerce empty strings to NULL for numeric columns
-// ------------------------------------------------------------------
 const NUMERIC_COLUMNS = {
   product: [
     'quantity', 'min_quantity', 'tax', 'discount', 'cprice', 'sprice',
@@ -103,9 +95,6 @@ function coerceNumerics(entity, obj) {
   return out;
 }
 
-// ------------------------------------------------------------------
-// POST /sync/register-client
-// ------------------------------------------------------------------
 exports.registerClient = async (req, res) => {
   const { client_id, device_name, device_info } = req.body;
   if (!client_id) return res.status(400).json({ message: 'client_id required' });
@@ -128,9 +117,7 @@ exports.registerClient = async (req, res) => {
   }
 };
 
-// ------------------------------------------------------------------
-// POST /sync/push
-// ------------------------------------------------------------------
+
 exports.pushChanges = async (req, res) => {
   const { client_id, changes } = req.body;
 
@@ -199,9 +186,7 @@ exports.pushChanges = async (req, res) => {
   }
 };
 
-// ------------------------------------------------------------------
-// POST /sync/push-receipt
-// ------------------------------------------------------------------
+
 exports.pushReceipt = async (req, res) => {
   const { client_id, uuid, op, receipt, client_updated_at } = req.body;
 
@@ -249,9 +234,7 @@ exports.pushReceipt = async (req, res) => {
   }
 };
 
-// ------------------------------------------------------------------
-// GET /sync/pull
-// ------------------------------------------------------------------
+
 exports.pullChanges = async (req, res) => {
   const since = req.query.since || '1970-01-01 00:00:00';
   const client_id = req.query.client_id;
@@ -280,7 +263,7 @@ exports.pullChanges = async (req, res) => {
       sales = rows;
     }
     
-    // Pull the rest of the tables
+    
     const usersRes = await pool.query('SELECT * FROM users WHERE updated_at >= $1', [since]);
     users = usersRes.rows;
 
@@ -321,9 +304,7 @@ exports.pullChanges = async (req, res) => {
   }
 };
 
-// ------------------------------------------------------------------
-// Internal helpers
-// ------------------------------------------------------------------
+
 async function processReceipt(receipt, user) {
   const { selectedProducts, paymentMode, amountPaid, username, clientName, clientPhone, serialNumber } = receipt;
 

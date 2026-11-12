@@ -47,8 +47,10 @@ const requestPasswordReset = async (req, res) => {
     const resetToken = generateNumericToken();
     const resetTokenExpiry = Date.now() + 3600000; 
 
+    // NOTE: PostgreSQL folds unquoted columns to lowercase. 
+    // So we MUST use resetpasswordtoken and resetpasswordexpires.
     await pool.query(
-      'UPDATE users SET resetPasswordToken = $1, resetPasswordExpires = $2 WHERE email = $3',
+      'UPDATE users SET resetpasswordtoken = $1, resetpasswordexpires = $2 WHERE email = $3',
       [resetToken, resetTokenExpiry, email]
     );
 
@@ -80,7 +82,7 @@ const resetPassword = async (req, res) => {
 
   try {
     const { rows: results } = await pool.query(
-      'SELECT * FROM users WHERE email = $1 AND resetPasswordToken = $2 AND resetPasswordExpires > $3',
+      'SELECT * FROM users WHERE email = $1 AND resetpasswordtoken = $2 AND resetpasswordexpires > $3',
       [email, token, Date.now()]
     );
 
@@ -92,7 +94,7 @@ const resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     await pool.query(
-      'UPDATE users SET password = $1, resetPasswordToken = NULL, resetPasswordExpires = NULL WHERE email = $2',
+      'UPDATE users SET password = $1, resetpasswordtoken = NULL, resetpasswordexpires = NULL WHERE email = $2',
       [hashedPassword, email]
     );
 
